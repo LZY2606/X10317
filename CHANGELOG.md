@@ -1,0 +1,85 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [1.1.1](https://github.com/oxc-project/fast-glob/compare/v1.1.0...v1.1.1) - 2026-08-31
+
+### Fixed
+
+- apply the negation offset to the globstar segment check ([#171](https://github.com/oxc-project/fast-glob/pull/171))
+
+### Other
+
+- reduce Rust dev debug info ([#162](https://github.com/oxc-project/fast-glob/pull/162))
+
+## [1.1.0](https://github.com/oxc-project/fast-glob/compare/v1.0.1...v1.1.0) - 2026-07-21
+
+### Added
+
+- add `validate` API for reporting invalid patterns ([#153](https://github.com/oxc-project/fast-glob/pull/153))
+
+### Other
+
+- update sponsor section ([#151](https://github.com/oxc-project/fast-glob/pull/151))
+- mention glob-match fork ([#148](https://github.com/oxc-project/fast-glob/pull/148))
+- normalize README sponsor section ([#143](https://github.com/oxc-project/fast-glob/pull/143))
+- *(deps)* update dependency rust to v1.95.0 ([#112](https://github.com/oxc-project/fast-glob/pull/112))
+
+### Added
+
+- `validate` function and `Error` type to reject invalid patterns (unclosed `{` or `[`, trailing `\`, too-deep brace nesting) with a descriptive error
+
+### Fixed
+
+- treat invalid patterns as non-matching under `!` negation, so negated globs like `!src/[abpp.js` no longer match everything
+- interpret character classes consistently between brace-branch scanning and matching (e.g. a `,` or `}` inside `[...]` inside braces is a class member, not a branch separator)
+- document that the result of `glob_match` for an invalid pattern is unspecified
+
+## [1.0.1](https://github.com/oxc-project/fast-glob/compare/v1.0.0...v1.0.1) - 2026-03-03
+
+### Fixed
+
+- treat malformed brace patterns as invalid ([#100](https://github.com/oxc-project/fast-glob/pull/100))
+- avoid panic on deep brace nesting ([#99](https://github.com/oxc-project/fast-glob/pull/99))
+- map `\a` escape sequence to BEL character (`\x07`) ([#98](https://github.com/oxc-project/fast-glob/pull/98))
+
+### Other
+
+- update crate docs repository link ([#101](https://github.com/oxc-project/fast-glob/pull/101))
+- keep \a escaped as literal a
+- *(deps)* lock file maintenance ([#60](https://github.com/oxc-project/fast-glob/pull/60))
+- *(deps)* lock file maintenance ([#51](https://github.com/oxc-project/fast-glob/pull/51))
+
+## [1.0.0](https://github.com/oxc-project/fast-glob/compare/v0.4.5...v1.0.0) - 2025-07-27
+
+### Other
+
+- clean up workflow files
+- *(release)* enable trusted publishing
+- *(deps)* update github-actions ([#33](https://github.com/oxc-project/fast-glob/pull/33))
+- *(deps)* update marcoieni/release-plz-action digest to 068d76d ([#32](https://github.com/oxc-project/fast-glob/pull/32))
+- *(deps)* update codspeedhq/action action to v3.7.0 ([#31](https://github.com/oxc-project/fast-glob/pull/31))
+- Add wax to benchmark ([#24](https://github.com/oxc-project/fast-glob/pull/24))
+- *(deps)* update dependency rust to v1.88.0 ([#30](https://github.com/oxc-project/fast-glob/pull/30))
+- *(deps)* update marcoieni/release-plz-action digest to 8724d33 ([#29](https://github.com/oxc-project/fast-glob/pull/29))
+- *(deps)* update marcoieni/release-plz-action digest to dde7b63 ([#26](https://github.com/oxc-project/fast-glob/pull/26))
+- *(deps)* update dependency rust to v1.87.0 ([#28](https://github.com/oxc-project/fast-glob/pull/28))
+- *(deps)* update dependency rust to v1.86.0 ([#27](https://github.com/oxc-project/fast-glob/pull/27))
+- *(deps)* update dependency rust to v1.85.1 ([#25](https://github.com/oxc-project/fast-glob/pull/25))
+- *(deps)* update github-actions ([#23](https://github.com/oxc-project/fast-glob/pull/23))
+- *(deps)* update marcoieni/release-plz-action digest to 476794e ([#22](https://github.com/oxc-project/fast-glob/pull/22))
+- *(deps)* update rust crate criterion2 to v3 ([#21](https://github.com/oxc-project/fast-glob/pull/21))
+- *(deps)* update github-actions ([#18](https://github.com/oxc-project/fast-glob/pull/18))
+- *(deps)* update github-actions ([#19](https://github.com/oxc-project/fast-glob/pull/19))
+- without any performance compromise ([#17](https://github.com/oxc-project/fast-glob/pull/17))
+
+## [0.4.5](https://github.com/oxc-project/fast-glob/compare/v0.4.4...v0.4.5) - 2025-02-27
+
+### Other
+
+- reduce generic expansion on function `glob_match`
