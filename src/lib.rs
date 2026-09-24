@@ -73,6 +73,103 @@ use arrayvec::ArrayVec;
 
 const MAX_BRACE_NESTING: usize = 10;
 
+/// Selects which byte in a *path* counts as a path separator.
+///
+/// Patterns always write separators as `/`; this option only governs how the
+/// path argument is interpreted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PathSeparator {
+    /// Delegate to the host platform: `/` on Unix, `/` and `\` on Windows.
+    #[default]
+    Host,
+    /// Only `/` is a separator. This is what the walker uses internally.
+    Unix,
+    /// Only `\` is a separator.
+    Windows,
+}
+
+/// Matching knobs accepted by [`glob_match_with_options`].
+///
+/// The [`Default`] configuration reproduces [`glob_match`] exactly:
+/// case-sensitive matching with host platform separators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchOptions {
+    /// When `false`, ASCII letters match regardless of case.
+    pub case_sensitive: bool,
+    /// Which path byte is treated as a separator.
+    pub path_separator: PathSeparator,
+}
+
+impl Default for MatchOptions {
+    fn default() -> Self {
+        Self {
+            case_sensitive: true,
+            path_separator: PathSeparator::Host,
+        }
+    }
+}
+
+impl MatchOptions {
+    /// The configuration [`glob_match`] uses: case-sensitive, host separators.
+    pub const fn host_default() -> Self {
+        Self {
+            case_sensitive: true,
+            path_separator: PathSeparator::Host,
+        }
+    }
+}
+
+/// Internal view of [`MatchOptions`]. Kept private to the crate so the walker
+/// can reuse the exact same matching core (including a sentinel separator for
+/// single-segment matching) without exposing internal knobs publicly.
+#[derive(Clone, Copy)]
+pub(crate) struct CoreOptions {
+    case_sensitive: bool,
+    host_separator: bool,
+    separator: u8,
+}
+
+impl CoreOptions {
+    pub(crate) const fn host(case_sensitive: bool) -> Self {
+        Self {
+            case_sensitive,
+            host_separator: true,
+            separator: 0,
+        }
+    }
+
+    pub(crate) const fn fixed(case_sensitive: bool, separator: u8) -> Self {
+        Self {
+            case_sensitive,
+            host_separator: false,
+            separator,
+        }
+    }
+
+    #[inline(always)]
+    fn is_separator(self, c: u8) -> bool {
+        if self.host_separator {
+            is_separator(c as char)
+        } else {
+            c == self.separator
+        }
+    }
+}
+
+impl From<&MatchOptions> for CoreOptions {
+    fn from(options: &MatchOptions) -> Self {
+        match options.path_separator {
+            PathSeparator::Host => CoreOptions::host(options.case_sensitive),
+            PathSeparator::Unix => CoreOptions::fixed(options.case_sensitive, b'/'),
+            PathSeparator::Windows => CoreOptions::fixed(options.case_sensitive, b'\\'),
+        }
+    }
+}
+
+fn lowercase_ascii(bytes: &[u8]) -> Vec<u8> {
+    bytes.iter().map(|c| c.to_ascii_lowercase()).collect()
+}
+
 #[derive(Clone, Debug, Default)]
 struct State {
     path_index: usize,
@@ -154,6 +251,43 @@ pub fn glob_match(glob: impl AsRef<[u8]>, path: impl AsRef<[u8]>) -> bool {
     matched && !invalid_pattern
 }
 
+/// Like [`glob_match`], but with explicit [`MatchOptions`] for case folding and
+/// path separators. [`MatchOptions::default`] reproduces [`glob_match`].
+///
+/// ```rust
+/// use fast_glob::{glob_match_with_options, MatchOptions, PathSeparator};
+///
+/// let casefold = MatchOptions {
+///     case_sensitive: false,
+///     path_separator: PathSeparator::Host,
+/// };
+/// assert!(glob_match_with_options("**/*.RS", "SRC/MAIN.RS", casefold));
+/// ```
+pub fn glob_match_with_options(
+    glob: impl AsRef<[u8]>,
+    path: impl AsRef<[u8]>,
+    options: MatchOptions,
+) -> bool {
+    let glob = glob.as_ref();
+    let path = path.as_ref();
+
+    let (mut glob_ref, mut path_ref) = (glob, path);
+    let (glob_owned, path_owned);
+    if !options.case_sensitive {
+        glob_owned = lowercase_ascii(glob);
+        path_owned = lowercase_ascii(path);
+        glob_ref = &glob_owned;
+        path_ref = &path_owned;
+    }
+
+    let (matched, invalid_pattern) = glob_match_core(
+        glob_ref,
+        path_ref,
+        CoreOptions::from(&options),
+    );
+    matched && !invalid_pattern
+}
+
 /// Checks that `glob` is a valid pattern.
 ///
 /// [`glob_match`] has no way to report an invalid pattern, and its result for
@@ -225,6 +359,17 @@ pub fn validate(glob: impl AsRef<[u8]>) -> Result<(), Error> {
 /// pattern was detected as invalid, so tests can check the latter against
 /// [`validate`].
 fn glob_match_internal(glob: &[u8], path: &[u8]) -> (bool, bool) {
+    glob_match_core(glob, path, CoreOptions::host(true))
+}
+
+/// The single matching engine shared by [`glob_match`],
+/// [`glob_match_with_options`] and the walker (via `pub(crate)` visibility).
+/// No matching logic is duplicated anywhere else in the crate.
+pub(crate) fn glob_match_core(
+    glob: &[u8],
+    path: &[u8],
+    options: CoreOptions,
+) -> (bool, bool) {
     let mut state = State::default();
 
     let mut negated = false;
@@ -236,8 +381,14 @@ fn glob_match_internal(glob: &[u8], path: &[u8]) -> (bool, bool) {
     let mut brace_stack = BraceStack::new();
     let mut invalid_pattern = false;
     let match_start = state.glob_index;
-    let matched =
-        state.glob_match_from(glob, path, match_start, &mut brace_stack, &mut invalid_pattern);
+    let matched = state.glob_match_from(
+        glob,
+        path,
+        match_start,
+        &mut brace_stack,
+        &mut invalid_pattern,
+        options,
+    );
 
     // A negated glob matches every path its pattern does not — for an invalid
     // pattern that would be every path, even when the matcher never reaches
