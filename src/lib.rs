@@ -115,6 +115,55 @@ pub enum ErrorKind {
     BraceNestingTooDeep,
 }
 
+/// Matching configuration for [`glob_match_with`] and [`crate::glob_walk`].
+///
+/// The default value reproduces the exact behavior of [`glob_match`]:
+/// case-sensitive matching with the operating system's path separators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchOptions {
+    /// Whether matching compares bytes case-sensitively. When `false`,
+    /// literal bytes and character-class ranges match ASCII-case-insensitively.
+    /// Defaults to `true`.
+    pub case_sensitive: bool,
+    /// The path separator recognized in the *path* being matched. `None`
+    /// uses the operating system's separators (`/` everywhere, plus `\\` on
+    /// Windows), which is what [`glob_match`] has always done. Patterns keep
+    /// using `/` (or the configured separator) as their segment delimiter.
+    /// Defaults to `None`.
+    pub separator: Option<char>,
+}
+
+impl Default for MatchOptions {
+    fn default() -> Self {
+        Self { case_sensitive: true, separator: None }
+    }
+}
+
+impl MatchOptions {
+    #[inline(always)]
+    fn is_separator(&self, byte: u8) -> bool {
+        match self.separator {
+            Some(separator) => byte as char == separator,
+            None => is_separator(byte as char),
+        }
+    }
+
+    #[inline(always)]
+    fn byte_eq(&self, a: u8, b: u8) -> bool {
+        a == b || (!self.case_sensitive && a.eq_ignore_ascii_case(&b))
+    }
+
+    #[inline(always)]
+    fn class_contains(&self, c: u8, low: u8, high: u8) -> bool {
+        if self.case_sensitive {
+            return low <= c && c <= high;
+        }
+        // Fold all three endpoints so `[a-z]` matches `A` and `[A-Z]` matches `a`.
+        let c = c.to_ascii_lowercase();
+        low.to_ascii_lowercase() <= c && c <= high.to_ascii_lowercase()
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let index = self.index;
@@ -150,7 +199,24 @@ impl std::error::Error for Error {}
 /// exact behavior may change between releases. Callers accepting user-written
 /// patterns should reject invalid ones up front with [`validate`].
 pub fn glob_match(glob: impl AsRef<[u8]>, path: impl AsRef<[u8]>) -> bool {
-    let (matched, invalid_pattern) = glob_match_internal(glob.as_ref(), path.as_ref());
+    glob_match_with(glob, path, MatchOptions::default())
+}
+
+/// Like [`glob_match`], but with explicit matching configuration.
+///
+/// `options` controls case sensitivity and which byte counts as a path
+/// separator in `path`; see [`MatchOptions`]. With
+/// [`MatchOptions::default()`] this is exactly [`glob_match`]. This is the
+/// single matching engine used by both the string-matching entry points and
+/// the directory walker ([`crate::glob_walk`]), so the two can never
+/// disagree about whether a pattern matches a path.
+pub fn glob_match_with(
+    glob: impl AsRef<[u8]>,
+    path: impl AsRef<[u8]>,
+    options: MatchOptions,
+) -> bool {
+    let (matched, invalid_pattern) =
+        glob_match_internal_with(glob.as_ref(), path.as_ref(), options);
     matched && !invalid_pattern
 }
 
@@ -224,7 +290,12 @@ pub fn validate(glob: impl AsRef<[u8]>) -> Result<(), Error> {
 /// Returns the match result (with negation applied) alongside whether the
 /// pattern was detected as invalid, so tests can check the latter against
 /// [`validate`].
+#[cfg(test)]
 fn glob_match_internal(glob: &[u8], path: &[u8]) -> (bool, bool) {
+    glob_match_internal_with(glob, path, MatchOptions::default())
+}
+
+fn glob_match_internal_with(glob: &[u8], path: &[u8], options: MatchOptions) -> (bool, bool) {
     let mut state = State::default();
 
     let mut negated = false;
@@ -236,8 +307,14 @@ fn glob_match_internal(glob: &[u8], path: &[u8]) -> (bool, bool) {
     let mut brace_stack = BraceStack::new();
     let mut invalid_pattern = false;
     let match_start = state.glob_index;
-    let matched =
-        state.glob_match_from(glob, path, match_start, &mut brace_stack, &mut invalid_pattern);
+    let matched = state.glob_match_from(
+        glob,
+        path,
+        match_start,
+        &mut brace_stack,
+        &mut invalid_pattern,
+        options,
+    );
 
     // A negated glob matches every path its pattern does not — for an invalid
     // pattern that would be every path, even when the matcher never reaches
@@ -318,14 +395,14 @@ impl State {
     }
 
     #[inline(always)]
-    fn skip_to_separator(&mut self, path: &[u8], is_end_invalid: bool) {
+    fn skip_to_separator(&mut self, path: &[u8], is_end_invalid: bool, options: MatchOptions) {
         if self.path_index == path.len() {
             self.wildcard.path_index += 1;
             return;
         }
 
         let mut path_index = self.path_index;
-        while path_index < path.len() && !is_separator(path[path_index] as char) {
+        while path_index < path.len() && !options.is_separator(path[path_index]) {
             path_index += 1;
         }
 
@@ -370,6 +447,7 @@ impl State {
         branch_index: usize,
         brace_stack: &mut BraceStack,
         invalid_pattern: &mut bool,
+        options: MatchOptions,
     ) -> bool {
         // Gracefully reject brace expansions deeper than BraceStack capacity.
         if brace_stack.try_push((open_brace_index as u32, branch_index as u32)).is_err() {
@@ -381,8 +459,14 @@ impl State {
         branch_state.glob_index = branch_index;
         branch_state.brace_depth = brace_stack.len();
 
-        let matched =
-            branch_state.glob_match_from(glob, path, branch_index, brace_stack, invalid_pattern);
+        let matched = branch_state.glob_match_from(
+            glob,
+            path,
+            branch_index,
+            brace_stack,
+            invalid_pattern,
+            options,
+        );
 
         brace_stack.pop();
 
@@ -395,6 +479,7 @@ impl State {
         path: &[u8],
         brace_stack: &mut BraceStack,
         invalid_pattern: &mut bool,
+        options: MatchOptions,
     ) -> bool {
         let mut brace_depth = 0;
         let mut has_closing_brace = false;
@@ -423,6 +508,7 @@ impl State {
                             branch_index,
                             brace_stack,
                             invalid_pattern,
+                            options,
                         ) {
                             matched = true;
                         }
@@ -437,6 +523,7 @@ impl State {
                         branch_index,
                         brace_stack,
                         invalid_pattern,
+                        options,
                     ) {
                         matched = true;
                     }
@@ -470,6 +557,7 @@ impl State {
         match_start: usize,
         brace_stack: &mut BraceStack,
         invalid_pattern: &mut bool,
+        options: MatchOptions,
     ) -> bool {
         while self.glob_index < glob.len() || self.path_index < path.len() {
             if self.glob_index < glob.len() {
@@ -499,7 +587,7 @@ impl State {
                                     self.glob_index += 1;
                                 }
 
-                                self.skip_to_separator(path, is_end_invalid);
+                                self.skip_to_separator(path, is_end_invalid, options);
                                 in_globstar = true;
                             }
                         } else {
@@ -508,7 +596,7 @@ impl State {
 
                         if !in_globstar
                             && self.path_index < path.len()
-                            && is_separator(path[self.path_index] as char)
+                            && options.is_separator(path[self.path_index])
                         {
                             self.wildcard = self.globstar;
                         }
@@ -516,7 +604,7 @@ impl State {
                         continue;
                     }
                     b'?' if self.path_index < path.len()
-                        && !is_separator(path[self.path_index] as char) =>
+                        && !options.is_separator(path[self.path_index]) =>
                     {
                         self.glob_index += 1;
                         self.path_index += 1;
@@ -563,7 +651,7 @@ impl State {
                                 low
                             };
 
-                            if low <= c && c <= high {
+                            if options.class_contains(c, low, high) {
                                 is_match = true;
                             }
 
@@ -591,7 +679,7 @@ impl State {
                             self.brace_depth += 1;
                             continue;
                         }
-                        return self.match_brace(glob, path, brace_stack, invalid_pattern);
+                        return self.match_brace(glob, path, brace_stack, invalid_pattern, options);
                     }
                     b',' | b'}' if self.brace_depth > 0 => {
                         self.skip_branch(glob);
@@ -602,10 +690,12 @@ impl State {
                             return false;
                         }
 
+                        // A literal `/` in the pattern matches whatever byte the
+                        // configuration recognizes as a path separator.
                         let is_match = if c == b'/' {
-                            is_separator(path[self.path_index] as char)
+                            options.is_separator(path[self.path_index])
                         } else {
-                            path[self.path_index] == c
+                            options.byte_eq(path[self.path_index], c)
                         };
 
                         if is_match {
